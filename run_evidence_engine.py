@@ -1,87 +1,179 @@
 """
-BIDPROOF - Document Processing & Evidence Retrieval Engine CLI
-This script runs Module 1 (Tender Ingestion) & Module 2 (Evidence Retrieval).
-Generates standardized evidence JSON for downstream verification and reporting modules.
+BIDPROOF - Document Processing & Evidence Retrieval Engine
+
+Connects:
+1. PDF document processing
+2. Text chunking
+3. Evidence retrieval
+4. JSON output
 """
+
 import argparse
 import json
-import sys
 from pathlib import Path
 
-# Ensure UTF-8 output on Windows consoles
-if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+from bidproof.bidproof.document_processor import extract_pdf_text
+from bidproof.bidproof.chunker import chunk_pages
+from bidproof.bidproof.evidence_retriever import find_evidence
 
-# Add project root to sys.path
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from bidproof.module1_extraction.extractor import RequirementExtractor
-from bidproof.module2_retrieval.retriever import EvidenceRetriever
+def process_document(file_path):
+    """Extract text from a PDF and split it into chunks."""
+
+    file_path = Path(file_path)
+
+    if not file_path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+    pages = extract_pdf_text(file_path)
+
+    chunks = chunk_pages(pages)
+
+    return chunks
 
 
 def run_evidence_engine(
-    rfp_path: str = "data/sample_rfp.json",
-    docs_dir: str = "data/company_docs",
-    output_path: str = "reports/evidence_results.json",
+    rfp_path,
+    docs_dir="data/company_docs",
+    output_path="reports/evidence_results.json"
 ):
-    print("================================================================================")
-    print("🔍 BIDPROOF: DOCUMENT PROCESSING & EVIDENCE RETRIEVAL ENGINE")
-    print("================================================================================")
+    """Run the BidProof evidence processing pipeline."""
 
-    # 1. Document Extraction (Module 1)
-    rfp_file = Path(rfp_path)
-    print(f"\n[Step 1] Ingesting RFP / Tender Document: {rfp_file}")
-    extractor = RequirementExtractor()
-    tender = extractor.extract_from_file(rfp_file)
-    print(f"  ✓ Tender Title: {tender.tender_title}")
-    print(f"  ✓ Extracted Requirements: {len(tender.requirements)} clauses")
+    print("=" * 70)
+    print("BIDPROOF: DOCUMENT PROCESSING & EVIDENCE RETRIEVAL ENGINE")
+    print("=" * 70)
 
-    # 2. Document Ingestion & Chunking (Module 2)
+    # ---------------------------------------------------------
+    # STEP 1: Process RFP / Tender document
+    # ---------------------------------------------------------
+
+    print("\n[Step 1] Processing RFP / Tender document...")
+
+    rfp_chunks = process_document(rfp_path)
+
+    print(f"✓ RFP processed")
+    print(f"✓ RFP chunks created: {len(rfp_chunks)}")
+
+    # ---------------------------------------------------------
+    # STEP 2: Process company documents
+    # ---------------------------------------------------------
+
+    print("\n[Step 2] Processing company documents...")
+
     company_dir = Path(docs_dir)
-    print(f"\n[Step 2] Indexing Company Knowledge Base from: {company_dir}")
-    retriever = EvidenceRetriever(top_k=3)
-    chunk_count = retriever.index_directory(company_dir)
-    print(f"  ✓ Indexed Chunks: {chunk_count} passages across company documents (PDF, TXT, etc.)")
 
-    # 3. Grounded Evidence Retrieval
-    print(f"\n[Step 3] Retrieving Grounded Evidence for Each Requirement...")
-    result = retriever.retrieve_all_requirements(tender.requirements, tender_id=tender.tender_id)
+    if not company_dir.exists():
+        print(f"⚠ Company document folder not found: {company_dir}")
+        company_chunks = []
+    else:
+        company_chunks = []
 
-    # 4. Display Results Summary
-    print("\n--------------------------------------------------------------------------------")
-    print(f"{'Req ID':<8} | {'Status':<20} | {'Conf':<6} | {'Source Document (Page, Section)':<35}")
-    print("--------------------------------------------------------------------------------")
+        for file_path in company_dir.rglob("*.pdf"):
+            try:
+                chunks = process_document(file_path)
+                company_chunks.extend(chunks)
 
-    for bundle in result.evidence_bundles:
-        status_str = bundle.status
-        source_cite = f"{bundle.source_document} (P.{bundle.page_number}, {bundle.section[:15]})"
-        print(f"{bundle.requirement_id:<8} | {status_str:<20} | {bundle.confidence:<6.2f} | {source_cite:<35}")
-        clean_text = bundle.evidence_text.replace("\n", " ").strip()
-        if len(clean_text) > 85:
-            clean_text = clean_text[:82] + "..."
-        print(f"         Evidence: \"{clean_text}\"\n")
+                print(
+                    f"✓ Processed {file_path.name}: "
+                    f"{len(chunks)} chunks"
+                )
 
-    # 5. Export JSON
-    out_file = Path(output_path)
-    retriever.export_evidence_json(result, out_file)
-    print("================================================================================")
-    print(f"✅ Evidence Retrieval Complete! Total Found: {result.evidence_found_count}/{result.total_requirements}")
-    print(f"📁 Exported Standard JSON: {out_file.resolve()}")
-    print("================================================================================")
-    return result
+            except Exception as error:
+                print(
+                    f"⚠ Could not process {file_path.name}: {error}"
+                )
+
+    print(f"✓ Total company chunks: {len(company_chunks)}")
+
+    # ---------------------------------------------------------
+    # STEP 3: Evidence retrieval
+    # ---------------------------------------------------------
+
+    print("\n[Step 3] Retrieving evidence...")
+
+    results = []
+
+    for chunk in rfp_chunks:
+        query = chunk.get("text", "")
+
+        if not query.strip():
+            continue
+
+        evidence = find_evidence(
+            company_chunks,
+            query,
+            top_k=3
+        )
+
+        results.append({
+            "query": query,
+            "evidence": evidence
+        })
+
+    print(f"✓ Evidence retrieval completed")
+    print(f"✓ Queries processed: {len(results)}")
+
+    # ---------------------------------------------------------
+    # STEP 4: Export results
+    # ---------------------------------------------------------
+
+    print("\n[Step 4] Exporting results...")
+
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(
+        output_file,
+        "w",
+        encoding="utf-8"
+    ) as file:
+        json.dump(
+            results,
+            file,
+            indent=2,
+            ensure_ascii=False
+        )
+
+    print(f"✓ Results saved to: {output_file}")
+
+    print("\n" + "=" * 70)
+    print("BIDPROOF EVIDENCE ENGINE COMPLETE")
+    print("=" * 70)
+
+    return results
 
 
 def main():
-    parser = argparse.ArgumentParser(description="BIDPROOF Document Processing & Evidence Engine")
-    parser.add_argument("--rfp", default="data/sample_rfp.json", help="Path to Tender/RFP document (PDF, JSON, or TXT)")
-    parser.add_argument("--docs", default="data/company_docs", help="Path to company documents folder")
-    parser.add_argument("--out", default="reports/evidence_results.json", help="Path to save output JSON")
+
+    parser = argparse.ArgumentParser(
+        description="BIDPROOF Document Processing & Evidence Engine"
+    )
+
+    parser.add_argument(
+        "--rfp",
+        default="data/sample_rfp.pdf",
+        help="Path to RFP/Tender PDF"
+    )
+
+    parser.add_argument(
+        "--docs",
+        default="data/company_docs",
+        help="Path to company documents"
+    )
+
+    parser.add_argument(
+        "--out",
+        default="reports/evidence_results.json",
+        help="Output JSON path"
+    )
 
     args = parser.parse_args()
-    run_evidence_engine(rfp_path=args.rfp, docs_dir=args.docs, output_path=args.out)
+
+    run_evidence_engine(
+        rfp_path=args.rfp,
+        docs_dir=args.docs,
+        output_path=args.out
+    )
 
 
 if __name__ == "__main__":
