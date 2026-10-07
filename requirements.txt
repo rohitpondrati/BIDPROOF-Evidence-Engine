@@ -1,0 +1,8 @@
+# BIDPROOF: Document Processing + Evidence Engine Dependencies
+# Core PDF extraction dependency:
+pypdf>=3.0.0
+
+# Optional document parsing and pipeline enhancement dependencies:
+python-docx>=0.8.11
+pydantic>=2.0.0
+rich>=13.0.0
